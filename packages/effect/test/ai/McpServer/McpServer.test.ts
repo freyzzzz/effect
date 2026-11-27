@@ -4313,7 +4313,12 @@ describe("McpServer", () => {
       Effect.gen(function*() {
         const StaticVisible = Toolkit.make(Tool.make("Search", { success: Schema.String }))
         const StaticHidden = Toolkit.make(Tool.make("HiddenStatic", { success: Schema.String }))
-        let dynamicNames = ["Search", "HiddenStatic", "Deploy", "Status"]
+        let dynamicNames = ["Search", "HiddenStatic", "Deploy", "Status", "Deploy"]
+        let duringList: Effect.Effect<void> = Effect.void
+        const failureCodes: Array<number> = []
+        const Observe = McpServer.middleware()((effect) =>
+          Effect.tapError(effect, (error) => Effect.sync(() => failureCodes.push(error.code)))
+        )
         const registrations = Layer.mergeAll(
           McpServer.toolkit(StaticVisible).pipe(
             Layer.provide(StaticVisible.toLayer({ Search: () => Effect.succeed("static") }))
@@ -4324,12 +4329,12 @@ describe("McpServer", () => {
           ),
           Layer.effectDiscard(McpServer.registerToolSource({
             owns: (name) => name !== "Logs",
-            list: Effect.sync(() => dynamicNames.map(descriptor)),
+            list: Effect.suspend(() => Effect.as(duringList, dynamicNames.map(descriptor))),
             call: (name, args) =>
               name === "Unknown"
                 ? Effect.fail(new Cause.NoSuchElementError())
                 : Effect.succeed(textResult(`first:${name}:${JSON.stringify(args)}`))
-          })),
+          })).pipe(Layer.provide(Observe.layer)),
           McpServer.toolSource({
             list: Effect.succeed(["Status", "Logs"].map(descriptor)),
             call: (name, args) => Effect.succeed(textResult(`second:${name}:${JSON.stringify(args)}`))
@@ -4355,11 +4360,13 @@ describe("McpServer", () => {
           callText(yield* harness.sendRequest("tools/call", { name: "Logs", arguments: { id: 2 } })),
           "second:Logs:{\"id\":2}"
         )
-        // NoSuchElementError maps to ToolNotFound without falling through to later sources.
+        // NoSuchElementError maps to ToolNotFound without falling through to later sources,
+        // and reaches middleware as an MCP error.
         assert.deepStrictEqual(
           (yield* harness.sendRequest("tools/call", { name: "Unknown", arguments: {} })).error,
           { code: -32602, message: "Tool 'Unknown' not found" }
         )
+        assert.deepStrictEqual(failureCodes, [-32602])
 
         assert.deepStrictEqual(listedNames(yield* harness.sendRequest("tools/list")), [
           "Search",
@@ -4368,6 +4375,18 @@ describe("McpServer", () => {
           "Logs"
         ])
         dynamicNames = ["Deploy", "Extra"]
+        assert.deepStrictEqual(listedNames(yield* harness.sendRequest("tools/list")), [
+          "Search",
+          "Deploy",
+          "Extra",
+          "Logs"
+        ])
+        // A tool registered during discovery does not shadow the source in that response.
+        duringList = harness.server.addTool({
+          tool: descriptor("Extra"),
+          annotations: Context.empty(),
+          handle: () => Effect.succeed(textResult("static"))
+        })
         assert.deepStrictEqual(listedNames(yield* harness.sendRequest("tools/list")), [
           "Search",
           "Deploy",
