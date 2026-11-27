@@ -4304,6 +4304,10 @@ describe("McpServer", () => {
   describe("toolSource", () => {
     const descriptor = (name: string) => new McpSchema.Tool({ name, inputSchema: { type: "object" } })
     const textResult = (text: string) => new McpSchema.CallToolResult({ content: [{ type: "text", text }] })
+    const listedNames = (message: { readonly result?: unknown }) =>
+      (message.result as { readonly tools: ReadonlyArray<{ readonly name: string }> }).tools.map((tool) => tool.name)
+    const callText = (message: { readonly result?: unknown }) =>
+      (message.result as { readonly content: ReadonlyArray<{ readonly text: string }> }).content[0].text
 
     it.effect("applies static precedence, owns routing, and per-request listing", () =>
       Effect.gen(function*() {
@@ -4336,7 +4340,7 @@ describe("McpServer", () => {
 
         // Direct calls work without a prior list; static and hidden static never fall through.
         assert.strictEqual(
-          ((yield* harness.sendRequest("tools/call", { name: "Search", arguments: {} })).result as any).content[0].text,
+          callText(yield* harness.sendRequest("tools/call", { name: "Search", arguments: {} })),
           "static"
         )
         assert.deepStrictEqual(
@@ -4344,13 +4348,11 @@ describe("McpServer", () => {
           { code: -32602, message: "Tool 'HiddenStatic' not found" }
         )
         assert.strictEqual(
-          ((yield* harness.sendRequest("tools/call", { name: "Status", arguments: { id: 1 } })).result as any).content[0]
-            .text,
+          callText(yield* harness.sendRequest("tools/call", { name: "Status", arguments: { id: 1 } })),
           "first:Status:{\"id\":1}"
         )
         assert.strictEqual(
-          ((yield* harness.sendRequest("tools/call", { name: "Logs", arguments: { id: 2 } })).result as any).content[0]
-            .text,
+          callText(yield* harness.sendRequest("tools/call", { name: "Logs", arguments: { id: 2 } })),
           "second:Logs:{\"id\":2}"
         )
         // NoSuchElementError maps to ToolNotFound without falling through to later sources.
@@ -4359,15 +4361,19 @@ describe("McpServer", () => {
           { code: -32602, message: "Tool 'Unknown' not found" }
         )
 
-        assert.deepStrictEqual(
-          ((yield* harness.sendRequest("tools/list")).result as any).tools.map((t: { readonly name: string }) => t.name),
-          ["Search", "Deploy", "Status", "Logs"]
-        )
+        assert.deepStrictEqual(listedNames(yield* harness.sendRequest("tools/list")), [
+          "Search",
+          "Deploy",
+          "Status",
+          "Logs"
+        ])
         dynamicNames = ["Deploy", "Extra"]
-        assert.deepStrictEqual(
-          ((yield* harness.sendRequest("tools/list")).result as any).tools.map((t: { readonly name: string }) => t.name),
-          ["Search", "Deploy", "Extra", "Logs"]
-        )
+        assert.deepStrictEqual(listedNames(yield* harness.sendRequest("tools/list")), [
+          "Search",
+          "Deploy",
+          "Extra",
+          "Logs"
+        ])
       }))
 
     it.effect("advertises tools capability, runs middleware and allowlist visibility, and maps errors", () =>
@@ -4400,23 +4406,16 @@ describe("McpServer", () => {
         const initialized = yield* harness.initialize()
         assert.deepStrictEqual((initialized.result as any).capabilities.tools, { listChanged: true })
 
-        assert.deepStrictEqual(
-          ((yield* harness.sendRequest("tools/list")).result as any).tools.map((t: { readonly name: string }) => t.name),
-          ["Deploy"]
-        )
+        assert.deepStrictEqual(listedNames(yield* harness.sendRequest("tools/list")), ["Deploy"])
         assert.deepStrictEqual(
           (yield* harness.sendRequest("tools/call", { name: "AdminReset", arguments: {} })).error,
           { code: -32602, message: "Tool 'AdminReset' not found" }
         )
 
         state.user = "admin"
-        assert.deepStrictEqual(
-          ((yield* harness.sendRequest("tools/list")).result as any).tools.map((t: { readonly name: string }) => t.name),
-          ["Deploy", "AdminReset"]
-        )
+        assert.deepStrictEqual(listedNames(yield* harness.sendRequest("tools/list")), ["Deploy", "AdminReset"])
         assert.strictEqual(
-          ((yield* harness.sendRequest("tools/call", { name: "AdminReset", arguments: {} })).result as any).content[0]
-            .text,
+          callText(yield* harness.sendRequest("tools/call", { name: "AdminReset", arguments: {} })),
           "admin:AdminReset"
         )
         assert.deepStrictEqual(
